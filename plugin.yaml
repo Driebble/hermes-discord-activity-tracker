@@ -1,0 +1,14 @@
+name: discord-activity
+version: 1.0.0
+description: Discord presence tracking — REST polling via Lanyard, daily JSONL logs, activity queries
+author: Aura
+provides_tools:
+  - discord_activity
+requires_env:
+  - name: DISCORD_ACTIVITY_USER_ID
+    description: "Discord user ID to track presence for"
+optional_env:
+  - name: DISCORD_ACTIVITY_POLL_INTERVAL
+    description: "Seconds between REST polls (default: 60)"
+  - name: DISCORD_ACTIVITY_LANYARD_API
+    description: "Lanyard API base URL (default: https://api.lanyard.rest/v1)"
