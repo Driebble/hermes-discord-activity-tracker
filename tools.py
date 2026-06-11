@@ -9,8 +9,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
 
-WIB = timezone(timedelta(hours=7))
-
 # Default paths
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes" / "profiles" / "aura"))
 _DEFAULT_LOG_DIR = _HERMES_HOME / "logs" / "discord-activity"

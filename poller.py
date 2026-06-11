@@ -7,8 +7,7 @@ Writes presence snapshots to daily JSONL files.
 import json
 import os
 import threading
-import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -24,8 +23,9 @@ except ImportError:
             try:
                 with urllib.request.urlopen(url, timeout=timeout) as resp:
                     return _Response(resp.read(), resp.status)
-            except urllib.error.HTTPError as e:
-                return _Response(b"", e.code)
+            except (urllib.error.HTTPError, urllib.error.URLError) as e:
+                code = e.code if hasattr(e, "code") else 0
+                return _Response(b"", code)
 
     class _Response:
         def __init__(self, data, status_code):
@@ -36,9 +36,6 @@ except ImportError:
             return json.loads(self._data)
 
     requests = _RequestsFallback()
-
-
-WIB = timezone(timedelta(hours=7))
 
 
 def _is_process_alive(pid):
@@ -109,7 +106,7 @@ class ActivityPoller:
         """Main polling loop — runs in a background thread."""
         while not self._stop.is_set():
             # Sleep until the next poll_interval-aligned boundary
-            now = datetime.now(WIB)
+            now = datetime.now().astimezone()
             elapsed_in_interval = (now.minute * 60 + now.second) % self.poll_interval
             wait = self.poll_interval - elapsed_in_interval - now.microsecond / 1_000_000
             if wait > 0:
@@ -117,7 +114,7 @@ class ActivityPoller:
             if self._stop.is_set():
                 break
 
-            now = datetime.now(WIB)
+            now = datetime.now().astimezone()
             data = self._fetch()
 
             if data and data.get("discord_status") is not None:
@@ -159,7 +156,7 @@ class ActivityPoller:
 
     def _write(self, entry):
         """Append entry to today's daily JSONL file."""
-        today = datetime.now(WIB).strftime("%Y-%m-%d")
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
         log_file = self.log_dir / f"{today}.jsonl"
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

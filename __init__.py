@@ -17,7 +17,11 @@ def register(ctx):
         return
 
     api_base = os.environ.get("DISCORD_ACTIVITY_LANYARD_API", "https://api.lanyard.rest/v1")
-    poll_interval = int(os.environ.get("DISCORD_ACTIVITY_POLL_INTERVAL", "60"))
+    try:
+        poll_interval = int(os.environ.get("DISCORD_ACTIVITY_POLL_INTERVAL", "60"))
+    except ValueError:
+        print("[discord-activity] Invalid DISCORD_ACTIVITY_POLL_INTERVAL, using default 60s")
+        poll_interval = 60
     api_url = f"{api_base}/users/{user_id}"
 
     log_dir = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes" / "profiles" / "aura")) / "logs" / "discord-activity"
