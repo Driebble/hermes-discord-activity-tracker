@@ -251,7 +251,9 @@ def _get_stats(log_dir, legacy_log, days):
                 for p in active:
                     platform_minutes[p] += share
 
-    # Spotify stats
+    # Spotify stats — each track play has a unique timestamps.start
+    # Count each play once (dedupe by timestamps.start)
+    seen_plays = set()
     track_ms = defaultdict(float)
     artist_ms = defaultdict(float)
     for e in entries:
@@ -263,9 +265,11 @@ def _get_stats(log_dir, legacy_log, days):
         if not song:
             continue
         ts_info = spotify.get("timestamps", {})
-        start_ms = ts_info.get("start")
+        play_start = ts_info.get("start")
+        start_ms = play_start
         end_ms = ts_info.get("end")
-        if start_ms and end_ms:
+        if start_ms and end_ms and play_start not in seen_plays:
+            seen_plays.add(play_start)
             dur_ms = max(0, end_ms - start_ms)
             key = f"{song}|{artist}"
             track_ms[key] += dur_ms
