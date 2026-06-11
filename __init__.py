@@ -8,9 +8,19 @@ import os
 from pathlib import Path
 
 
+def _get_log_dir():
+    """Resolve log directory using hermes_constants (standard plugin pattern)."""
+    try:
+        from hermes_constants import get_hermes_home
+    except ImportError:
+        def get_hermes_home() -> Path:
+            val = (os.environ.get("HERMES_HOME") or "").strip()
+            return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
+    return get_hermes_home() / "logs" / "discord-activity"
+
+
 def register(ctx):
     """Register the discord_activity tool and start the background poller."""
-    # Load config from environment
     user_id = os.environ.get("DISCORD_ACTIVITY_USER_ID")
     if not user_id:
         print("[discord-activity] DISCORD_ACTIVITY_USER_ID not set — plugin disabled")
@@ -24,7 +34,7 @@ def register(ctx):
         poll_interval = 60
     api_url = f"{api_base}/users/{user_id}"
 
-    log_dir = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes" / "profiles" / "aura")) / "logs" / "discord-activity"
+    log_dir = _get_log_dir()
 
     # Register tool
     from . import schemas, tools

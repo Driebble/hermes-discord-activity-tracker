@@ -9,16 +9,26 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
 
-# Default paths
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes" / "profiles" / "aura"))
-_DEFAULT_LOG_DIR = _HERMES_HOME / "logs" / "discord-activity"
+# ─── Hermes home detection (matches standard plugin pattern) ─────
+
+try:
+    from hermes_constants import get_hermes_home
+except ImportError:
+    def get_hermes_home() -> Path:
+        val = (os.environ.get("HERMES_HOME") or "").strip()
+        return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
+
+_LOG_SUBDIR = "logs/discord-activity"
 
 
 def _get_log_dir():
     """Get the log directory, creating it if needed."""
-    log_dir = _DEFAULT_LOG_DIR
+    log_dir = get_hermes_home() / _LOG_SUBDIR
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
+
+
+# ─── Data Loading ────────────────────────────────────────────────
 
 
 def _load_entries(log_dir, cutoff):
@@ -28,7 +38,6 @@ def _load_entries(log_dir, cutoff):
 
     if log_dir.is_dir():
         for filename in sorted(os.listdir(log_dir)):
-            # Only read .jsonl files; skip files older than cutoff date
             if not filename.endswith(".jsonl"):
                 continue
             file_date = filename.removesuffix(".jsonl")
@@ -65,6 +74,9 @@ def _load_file(entries, filepath, cutoff):
                 continue
 
 
+# ─── Helpers ─────────────────────────────────────────────────────
+
+
 def _activity_names(entry):
     """Get non-Spotify activity names."""
     names = []
@@ -94,6 +106,10 @@ def _format_spotify(entry):
     if not info:
         return None
     return f"{info['song']} — {info['artist']}"
+
+
+# Safe separator for composite keys (song|artist can contain |)
+_KEY_SEP = "\x00"
 
 
 # ─── Query Handlers ──────────────────────────────────────────────
@@ -180,7 +196,6 @@ def _get_timeline(log_dir, days):
         }
 
     for e in entries:
-        # Content = activities + spotify state (not specific track)
         names = _activity_names(e)
         has_spotify = bool((e.get("spotify") or {}).get("song"))
         content = (
@@ -200,7 +215,6 @@ def _get_timeline(log_dir, days):
             _close_period(now)
             current_period = _make_period(e, now)
 
-        # Update Spotify display to latest track in this period
         if has_spotify and current_period:
             current_period["spotify"] = _format_spotify(e)
 
@@ -264,7 +278,7 @@ def _get_stats(log_dir, days):
         if play_start and end_ms and play_start not in seen_plays:
             seen_plays.add(play_start)
             dur_ms = max(0, end_ms - play_start)
-            key = f"{song}|{artist}"
+            key = f"{song}{_KEY_SEP}{artist}"
             track_ms[key] += dur_ms
             for a in artist.split(";"):
                 a = a.strip()
@@ -273,7 +287,7 @@ def _get_stats(log_dir, days):
 
     top_songs = []
     for key, ms in sorted(track_ms.items(), key=lambda x: -x[1])[:10]:
-        song, artist = key.split("|", 1)
+        song, artist = key.split(_KEY_SEP, 1)
         top_songs.append({"song": song, "artist": artist, "minutes": round(ms / 60000, 1)})
 
     top_artists = []
@@ -365,5 +379,5 @@ def discord_activity(args: dict, **kwargs) -> str:
             return _get_history(log_dir, minutes)
         else:
             return json.dumps({"error": f"Unknown query: {query}"})
-    except Exception as e:
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
         return json.dumps({"error": str(e)})
