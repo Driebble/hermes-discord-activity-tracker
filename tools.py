@@ -24,11 +24,17 @@ def _get_log_dir():
 def _load_entries(log_dir, cutoff):
     """Load entries from daily JSONL files within the time window."""
     entries = []
+    cutoff_date = cutoff.strftime("%Y-%m-%d")
 
     if log_dir.is_dir():
         for filename in sorted(os.listdir(log_dir)):
-            if filename.endswith(".jsonl"):
-                _load_file(entries, log_dir / filename, cutoff)
+            # Only read .jsonl files; skip files older than cutoff date
+            if not filename.endswith(".jsonl"):
+                continue
+            file_date = filename.removesuffix(".jsonl")
+            if file_date < cutoff_date:
+                continue
+            _load_file(entries, log_dir / filename, cutoff)
 
     entries.sort(key=lambda e: e["_dt"])
     return entries
@@ -118,7 +124,6 @@ def _get_current_status(log_dir):
                     line = line.strip()
                     if line:
                         entry = json.loads(line)
-                        entry["_dt"] = datetime.fromisoformat(entry["timestamp"])
                         activities = _activity_names(entry)
                         spotify = _extract_spotify(entry)
                         return json.dumps({
