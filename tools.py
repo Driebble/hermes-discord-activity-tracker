@@ -91,6 +91,14 @@ def _extract_spotify(entry):
     return {"song": song, "artist": artist or "Unknown"}
 
 
+def _format_spotify(entry):
+    """Format Spotify info as a display string."""
+    info = _extract_spotify(entry)
+    if not info:
+        return None
+    return f"{info['song']} — {info['artist']}"
+
+
 # ─── Query Handlers ──────────────────────────────────────────────
 
 
@@ -190,16 +198,20 @@ def _get_timeline(log_dir, legacy_log, days):
         }
 
     for e in entries:
-        # Content = activities + Spotify only (ignore status flips)
+        # Content = activities + spotify state (not specific track)
+        names = _activity_names(e)
+        has_spotify = bool((e.get("spotify") or {}).get("song"))
         content = (
-            tuple(sorted(_activity_names(e))),
-            (e.get("spotify") or {}).get("song"),
+            tuple(sorted(names)),
+            has_spotify,
         )
         status = e.get("discord_status") or "online"
         now = e["_dt"]
 
         if prev_content is None:
             current_period = _make_period(e, now)
+            if has_spotify:
+                current_period["spotify"] = _format_spotify(e)
             prev_content = content
             continue
 
@@ -207,6 +219,10 @@ def _get_timeline(log_dir, legacy_log, days):
             # Real change — close current period, start new one
             _close_period(now)
             current_period = _make_period(e, now)
+
+        # Update Spotify display to latest track in this period
+        if has_spotify and current_period:
+            current_period["spotify"] = _format_spotify(e)
 
         # Track dominant status within the period
         if current_period:
@@ -219,6 +235,9 @@ def _get_timeline(log_dir, legacy_log, days):
 
     # Filter out periods shorter than 1 minute
     timeline = [p for p in timeline if p["duration_minutes"] >= 1.0]
+
+    # Filter out "Online (no activity)" periods — keep only real activity
+    timeline = [p for p in timeline if p["activity"] != "Online" or p.get("spotify")]
 
     return json.dumps({"timeline": timeline, "periods": len(timeline)})
 
