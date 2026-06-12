@@ -8,8 +8,7 @@ Discord presence tracking plugin for [Hermes Agent](https://github.com/NousResea
 - **REST polling** via Lanyard API (minute-aligned, 60s intervals)
 - **Daily JSONL logs** — one file per day, constant-time queries regardless of history depth
 - **`discord_activity` tool** — the agent can query presence data directly (status, timeline, stats, Spotify, history)
-- **Bundled skills** — lookup and report skills ship inside the plugin
-- **Cross-platform** — works on Windows, macOS, and Linux
+- **Cross-platform** — auto-detects system timezone, works on Windows, macOS, and Linux
 
 ## Configuration
 
@@ -107,16 +106,13 @@ hermes-discord-activity-tracker/
 ├── poller.py          # REST polling daemon thread (Lanyard API)
 ├── schemas.py         # discord_activity tool schema
 ├── tools.py           # Query handler (reads JSONL → JSON responses)
-├── LICENSE            # MIT
-└── skills/
-    ├── discord-activity-lookup/SKILL.md
-    └── discord-activity-report/SKILL.md
+└── LICENSE            # MIT
 ```
 
 - **Poller** runs as a daemon thread inside the Hermes process — starts on load, dies with Hermes
 - **PID lock** prevents duplicate pollers when multiple gateway instances run (e.g. Aura + Aria)
 - **Tool** reads JSONL files on-demand and returns structured data to the agent
-- **Skills** provide workflows for ad-hoc lookups and daily reports
+- **Tool** is self-describing (schema documents all queries) — no skills needed
 
 ## License
 
