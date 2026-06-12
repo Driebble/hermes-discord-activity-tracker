@@ -1,11 +1,14 @@
 """Discord Activity Plugin — REST presence tracking via Lanyard.
 
-Auto-starts a background poller thread when the gateway loads this plugin.
-CLI commands (hermes model, hermes tools, etc.) register the tool only.
+Auto-starts a background poller thread when Hermes loads this plugin.
+CLI commands that load plugins will trigger the poller, but the PID lock
+ensures only one poller runs per log directory. The poller is a daemon
+thread — it dies cleanly when the process exits.
 Exposes a discord_activity tool for querying presence data.
 """
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -21,12 +24,12 @@ def _get_log_dir():
 
 
 def register(ctx):
-    """Register the discord_activity tool. Start poller only in gateway context."""
+    """Register the discord_activity tool and start the background poller."""
     user_id = os.environ.get("DISCORD_ACTIVITY_USER_ID")
     if not user_id:
         return
 
-    # Register tool (always — so it's available for queries)
+    # Register tool
     from . import schemas, tools
 
     ctx.register_tool(
@@ -36,11 +39,8 @@ def register(ctx):
         handler=tools.discord_activity,
     )
 
-    # Only start poller in gateway context
-    # _HERMES_GATEWAY=1 is set by gateway/run.py, not by CLI commands
-    if os.environ.get("_HERMES_GATEWAY") != "1":
-        return
-
+    # Start poller — PID lock prevents duplicates if CLI and gateway coexist.
+    # The poller is a daemon thread: it dies when the process exits.
     api_base = os.environ.get("DISCORD_ACTIVITY_LANYARD_API", "https://api.lanyard.rest/v1")
     try:
         poll_interval = int(os.environ.get("DISCORD_ACTIVITY_POLL_INTERVAL", "60"))
@@ -55,7 +55,11 @@ def register(ctx):
         poll_interval=poll_interval,
         log_dir=_get_log_dir(),
     )
-    poller.start()
+    try:
+        poller.start()
+    except Exception as e:
+        print(f"[discord-activity] Poller failed to start: {e}", file=sys.stderr)
+        return
 
     import atexit
     atexit.register(poller.stop)
