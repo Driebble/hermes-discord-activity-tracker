@@ -1,7 +1,8 @@
 """Discord Activity Plugin — REST presence tracking via Lanyard.
 
-Auto-starts a background poller thread when Hermes loads this plugin.
 Exposes a discord_activity tool for querying presence data.
+Poller starts lazily on first tool call (not during register).
+CLI commands like `hermes model` won't trigger poller start/stop.
 """
 
 import os
@@ -19,8 +20,42 @@ def _get_log_dir():
     return get_hermes_home() / "logs" / "discord-activity"
 
 
+# Module-level state for lazy poller init
+_poller = None
+_poller_started = False
+_config = {}
+
+
+def _ensure_poller():
+    """Start the poller on first call (lazy init)."""
+    global _poller, _poller_started
+    if _poller_started:
+        return
+    _poller_started = True
+
+    from .poller import ActivityPoller
+
+    _poller = ActivityPoller(
+        user_id=_config["user_id"],
+        api_url=_config["api_url"],
+        poll_interval=_config["poll_interval"],
+        log_dir=_config["log_dir"],
+    )
+    _poller.start()
+
+    import atexit
+    atexit.register(_poller.stop)
+
+
+def _tool_handler(args, **kwargs):
+    """Tool wrapper that ensures poller is running before handling queries."""
+    _ensure_poller()
+    from . import tools
+    return tools.discord_activity(args, **kwargs)
+
+
 def register(ctx):
-    """Register the discord_activity tool and start the background poller."""
+    """Register the discord_activity tool. Configures but does NOT start poller."""
     user_id = os.environ.get("DISCORD_ACTIVITY_USER_ID")
     if not user_id:
         print("[discord-activity] DISCORD_ACTIVITY_USER_ID not set — plugin disabled")
@@ -32,31 +67,20 @@ def register(ctx):
     except ValueError:
         print("[discord-activity] Invalid DISCORD_ACTIVITY_POLL_INTERVAL, using default 60s")
         poll_interval = 60
-    api_url = f"{api_base}/users/{user_id}"
 
-    log_dir = _get_log_dir()
+    _config.update({
+        "user_id": user_id,
+        "api_url": f"{api_base}/users/{user_id}",
+        "poll_interval": poll_interval,
+        "log_dir": _get_log_dir(),
+    })
 
-    # Register tool
-    from . import schemas, tools
+    # Register tool with wrapper handler (poller starts on first call)
+    from . import schemas
 
     ctx.register_tool(
         name="discord_activity",
         toolset="hermes-discord-activity-tracker",
         schema=schemas.DISCORD_ACTIVITY,
-        handler=tools.discord_activity,
+        handler=_tool_handler,
     )
-
-    # Start background poller
-    from .poller import ActivityPoller
-
-    poller = ActivityPoller(
-        user_id=user_id,
-        api_url=api_url,
-        poll_interval=poll_interval,
-        log_dir=log_dir,
-    )
-    poller.start()
-
-    # Register cleanup
-    import atexit
-    atexit.register(poller.stop)
