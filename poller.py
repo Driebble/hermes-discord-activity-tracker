@@ -66,6 +66,7 @@ class ActivityPoller:
         self.log_dir = Path(log_dir)
         self._stop = threading.Event()
         self._thread = None
+        self._started = False
         self._poll_count = 0
         self._error_count = 0
 
@@ -78,7 +79,6 @@ class ActivityPoller:
             try:
                 old_pid = int(lock_file.read_text().strip())
                 if _is_process_alive(old_pid):
-                    print("[discord-activity] Poller already running (another instance holds lock)")
                     return
             except (ValueError, OSError):
                 pass
@@ -88,6 +88,7 @@ class ActivityPoller:
 
         self._thread = threading.Thread(target=self._run, daemon=True, name="discord-activity-poller")
         self._thread.start()
+        self._started = True
         print(f"[discord-activity] Poller started → {self.log_dir}/YYYY-MM-DD.jsonl")
 
     def stop(self):
@@ -95,12 +96,18 @@ class ActivityPoller:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
-        if hasattr(self, "_lock_file") and self._lock_file and self._lock_file.exists():
+
+        # Only delete the lock file if we own it
+        if self._started and hasattr(self, "_lock_file") and self._lock_file and self._lock_file.exists():
             try:
-                self._lock_file.unlink()
-            except OSError:
+                stored_pid = int(self._lock_file.read_text().strip())
+                if stored_pid == os.getpid():
+                    self._lock_file.unlink()
+            except (ValueError, OSError):
                 pass
-        print(f"[discord-activity] Poller stopped (polls: {self._poll_count}, errors: {self._error_count})")
+
+        if self._started:
+            print(f"[discord-activity] Poller stopped (polls: {self._poll_count}, errors: {self._error_count})")
 
     def _run(self):
         """Main polling loop — runs in a background thread."""

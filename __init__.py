@@ -1,6 +1,7 @@
 """Discord Activity Plugin — REST presence tracking via Lanyard.
 
-Auto-starts a background poller thread when Hermes loads this plugin.
+Auto-starts a background poller thread when the gateway loads this plugin.
+CLI commands (hermes model, hermes tools, etc.) register the tool only.
 Exposes a discord_activity tool for querying presence data.
 """
 
@@ -20,23 +21,12 @@ def _get_log_dir():
 
 
 def register(ctx):
-    """Register the discord_activity tool and start the background poller."""
+    """Register the discord_activity tool. Start poller only in gateway context."""
     user_id = os.environ.get("DISCORD_ACTIVITY_USER_ID")
     if not user_id:
-        print("[discord-activity] DISCORD_ACTIVITY_USER_ID not set — plugin disabled")
         return
 
-    api_base = os.environ.get("DISCORD_ACTIVITY_LANYARD_API", "https://api.lanyard.rest/v1")
-    try:
-        poll_interval = int(os.environ.get("DISCORD_ACTIVITY_POLL_INTERVAL", "60"))
-    except ValueError:
-        print("[discord-activity] Invalid DISCORD_ACTIVITY_POLL_INTERVAL, using default 60s")
-        poll_interval = 60
-    api_url = f"{api_base}/users/{user_id}"
-
-    log_dir = _get_log_dir()
-
-    # Register tool
+    # Register tool (always — so it's available for queries)
     from . import schemas, tools
 
     ctx.register_tool(
@@ -46,17 +36,26 @@ def register(ctx):
         handler=tools.discord_activity,
     )
 
-    # Start background poller
+    # Only start poller in gateway context
+    # _HERMES_GATEWAY=1 is set by gateway/run.py, not by CLI commands
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return
+
+    api_base = os.environ.get("DISCORD_ACTIVITY_LANYARD_API", "https://api.lanyard.rest/v1")
+    try:
+        poll_interval = int(os.environ.get("DISCORD_ACTIVITY_POLL_INTERVAL", "60"))
+    except ValueError:
+        poll_interval = 60
+
     from .poller import ActivityPoller
 
     poller = ActivityPoller(
         user_id=user_id,
-        api_url=api_url,
+        api_url=f"{api_base}/users/{user_id}",
         poll_interval=poll_interval,
-        log_dir=log_dir,
+        log_dir=_get_log_dir(),
     )
     poller.start()
 
-    # Register cleanup
     import atexit
     atexit.register(poller.stop)
