@@ -20,6 +20,15 @@ except ImportError:
 
 _LOG_SUBDIR = "logs/discord-activity"
 
+_ACTIVITY_TYPE_MAP = {
+    0: "playing",
+    1: "streaming",
+    2: "listening",
+    3: "watching",
+    4: "custom",
+    5: "competing",
+}
+
 
 def _get_log_dir():
     """Get the log directory, creating it if needed."""
@@ -78,14 +87,74 @@ def _load_file(entries, filepath, cutoff):
 
 
 def _activity_names(entry):
-    """Get non-Spotify activity names."""
+    """Get unique non-Spotify activity names."""
     names = []
+    seen = set()
     for act in entry.get("activities", []):
         if isinstance(act, dict):
             name = act.get("name")
-            if name and name.lower() != "spotify":
+            if name and name.lower() != "spotify" and name not in seen:
                 names.append(name)
+                seen.add(name)
     return names
+
+
+def _extract_activities(entry):
+    """Extract rich activity data for all non-Spotify activities.
+
+    Returns a list of activity dicts with key fields from Discord's
+    Rich Presence format. Handles any app generically.
+    Deduplicates by (name, details, state) — same video from multiple
+    sources (PreMiD + native) collapses to one.
+    """
+    seen = set()
+    result = []
+    for act in entry.get("activities", []):
+        if not isinstance(act, dict):
+            continue
+        name = act.get("name")
+        if not name or name.lower() == "spotify":
+            continue
+
+        details = act.get("details")
+        state = act.get("state")
+
+        # Deduplicate by (name, details, state)
+        sig = (name, details, state)
+        if sig in seen:
+            continue
+        seen.add(sig)
+
+        activity = {
+            "name": name,
+            "type": _ACTIVITY_TYPE_MAP.get(act.get("type"), "unknown"),
+        }
+
+        if details:
+            activity["details"] = details
+
+        if state:
+            activity["state"] = state
+
+        party = act.get("party")
+        if party and party.get("size"):
+            size = party["size"]
+            if isinstance(size, list) and len(size) >= 2:
+                activity["party"] = {"current": size[0], "max": size[1]}
+
+        timestamps = act.get("timestamps")
+        if timestamps:
+            ts_data = {}
+            if timestamps.get("start"):
+                ts_data["start"] = timestamps["start"]
+            if timestamps.get("end"):
+                ts_data["end"] = timestamps["end"]
+            if ts_data:
+                activity["timestamps"] = ts_data
+
+        result.append(activity)
+
+    return result
 
 
 def _extract_spotify(entry):
@@ -98,14 +167,6 @@ def _extract_spotify(entry):
     if not song:
         return None
     return {"song": song, "artist": artist or "Unknown"}
-
-
-def _format_spotify(entry):
-    """Format Spotify info as a display string."""
-    info = _extract_spotify(entry)
-    if not info:
-        return None
-    return f"{info['song']} — {info['artist']}"
 
 
 # Safe separator for composite keys (song|artist can contain |)
@@ -140,7 +201,7 @@ def _get_current_status(log_dir):
                     line = line.strip()
                     if line:
                         entry = json.loads(line)
-                        activities = _activity_names(entry)
+                        activities = _extract_activities(entry)
                         spotify = _extract_spotify(entry)
                         return json.dumps({
                             "status": entry.get("discord_status"),
@@ -182,12 +243,10 @@ def _get_timeline(log_dir, days):
         tracks = current_period.pop("_spotify_tracks", [])
         if tracks:
             if len(tracks) <= 3:
-                # Show all tracks
                 current_period["spotify"] = " · ".join(
                     t.replace("|", " — ", 1) for t in tracks
                 )
             else:
-                # Show count + unique artists
                 unique_artists = []
                 seen = set()
                 for t in tracks:
@@ -206,6 +265,8 @@ def _get_timeline(log_dir, days):
     def _make_period(entry, start_dt):
         names = _activity_names(entry)
         activity = ", ".join(names) if names else "Online"
+        # Get rich activity info for the period
+        activities = _extract_activities(entry)
         return {
             "_start_dt": start_dt,
             "_start_key": start_dt.strftime("%H:%M"),
@@ -215,6 +276,7 @@ def _get_timeline(log_dir, days):
             "duration_minutes": 0,
             "status": entry.get("discord_status") or "online",
             "activity": activity,
+            "activity_details": activities if activities else None,
             "spotify": None,
             "_spotify_tracks": [],  # Internal: collect all tracks
         }
@@ -241,11 +303,16 @@ def _get_timeline(log_dir, days):
             _close_period(now)
             current_period = _make_period(e, now)
 
+        # Update activity details to latest in this period
+        if current_period:
+            activities = _extract_activities(e)
+            if activities:
+                current_period["activity_details"] = activities
+
         if has_spotify and current_period:
             info = _extract_spotify(e)
             if info:
                 track_key = f"{info['song']}|{info['artist']}"
-                # Deduplicate by song+artist (each poll has same track)
                 if not current_period["_spotify_tracks"] or current_period["_spotify_tracks"][-1] != track_key:
                     current_period["_spotify_tracks"].append(track_key)
 
@@ -325,6 +392,32 @@ def _get_stats(log_dir, days):
     for artist, ms in sorted(artist_ms.items(), key=lambda x: -x[1])[:10]:
         top_artists.append({"artist": artist, "minutes": round(ms / 60000, 1)})
 
+    # Non-Spotify activity stats — track by app name + details/content
+    activity_ms = defaultdict(float)  # app name → total ms
+    content_counter = defaultdict(lambda: {"count": 0, "app": ""})  # "app|details" → count
+    for i in range(len(entries) - 1):
+        sec = (entries[i + 1]["_dt"] - entries[i]["_dt"]).total_seconds()
+        if sec > 1800:
+            continue
+        acts = _extract_activities(entries[i])
+        for act in acts:
+            name = act["name"]
+            activity_ms[name] += sec * 1000
+            details = act.get("details")
+            if details:
+                ckey = f"{name}{_KEY_SEP}{details}"
+                content_counter[ckey]["count"] += 1
+                content_counter[ckey]["app"] = name
+
+    top_activities = []
+    for name, ms in sorted(activity_ms.items(), key=lambda x: -x[1])[:10]:
+        top_activities.append({"name": name, "minutes": round(ms / 60000, 1)})
+
+    top_content = []
+    for ckey, info in sorted(content_counter.items(), key=lambda x: -x[1]["count"])[:10]:
+        _, details = ckey.split(_KEY_SEP, 1)
+        top_content.append({"app": info["app"], "details": details, "seen": info["count"]})
+
     # Total elapsed
     elapsed = (entries[-1]["_dt"] - entries[0]["_dt"]).total_seconds() / 60 if len(entries) >= 2 else 0
 
@@ -334,6 +427,10 @@ def _get_stats(log_dir, days):
         "elapsed_minutes": round(elapsed, 1),
         "status_minutes": {k: round(v, 1) for k, v in sorted(status_minutes.items(), key=lambda x: -x[1])},
         "platform_minutes": {k: round(v, 1) for k, v in platform_minutes.items()},
+        "activities": {
+            "top_apps": top_activities,
+            "top_content": top_content,
+        },
         "spotify": {
             "listening_minutes": round(sum(track_ms.values()) / 60000, 1),
             "unique_tracks": len(track_ms),
@@ -379,8 +476,8 @@ def _get_history(log_dir, minutes):
         result.append({
             "time": e.get("timestamp", "")[:19],
             "status": e.get("discord_status"),
-            "activities": _activity_names(e),
-            "spotify": (e.get("spotify") or {}).get("song"),
+            "activities": _extract_activities(e),
+            "spotify": _extract_spotify(e),
         })
 
     return json.dumps({"entries": result, "total": len(entries)})

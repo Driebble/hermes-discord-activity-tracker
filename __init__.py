@@ -8,7 +8,6 @@ Exposes a discord_activity tool for querying presence data.
 """
 
 import os
-import sys
 from pathlib import Path
 
 
