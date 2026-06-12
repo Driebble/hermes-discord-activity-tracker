@@ -177,6 +177,29 @@ def _get_timeline(log_dir, days):
         current_period["duration_minutes"] = round(dur, 1)
         del current_period["_start_dt"]
         del current_period["_start_key"]
+
+        # Format Spotify display from collected tracks
+        tracks = current_period.pop("_spotify_tracks", [])
+        if tracks:
+            if len(tracks) <= 3:
+                # Show all tracks
+                current_period["spotify"] = " · ".join(
+                    t.replace("|", " — ", 1) for t in tracks
+                )
+            else:
+                # Show count + unique artists
+                unique_artists = []
+                seen = set()
+                for t in tracks:
+                    artist = t.split("|", 1)[1]
+                    if artist not in seen:
+                        seen.add(artist)
+                        unique_artists.append(artist)
+                artists_str = ", ".join(unique_artists[:5])
+                if len(unique_artists) > 5:
+                    artists_str += f" +{len(unique_artists) - 5} more"
+                current_period["spotify"] = f"{len(tracks)} tracks — {artists_str}"
+
         timeline.append(current_period)
         current_period = None
 
@@ -193,6 +216,7 @@ def _get_timeline(log_dir, days):
             "status": entry.get("discord_status") or "online",
             "activity": activity,
             "spotify": None,
+            "_spotify_tracks": [],  # Internal: collect all tracks
         }
 
     for e in entries:
@@ -207,7 +231,9 @@ def _get_timeline(log_dir, days):
         if prev_content is None:
             current_period = _make_period(e, now)
             if has_spotify:
-                current_period["spotify"] = _format_spotify(e)
+                info = _extract_spotify(e)
+                if info:
+                    current_period["_spotify_tracks"].append(f"{info['song']}|{info['artist']}")
             prev_content = content
             continue
 
@@ -216,7 +242,12 @@ def _get_timeline(log_dir, days):
             current_period = _make_period(e, now)
 
         if has_spotify and current_period:
-            current_period["spotify"] = _format_spotify(e)
+            info = _extract_spotify(e)
+            if info:
+                track_key = f"{info['song']}|{info['artist']}"
+                # Deduplicate by song+artist (each poll has same track)
+                if not current_period["_spotify_tracks"] or current_period["_spotify_tracks"][-1] != track_key:
+                    current_period["_spotify_tracks"].append(track_key)
 
         prev_content = content
 
