@@ -152,6 +152,14 @@ def _extract_activities(entry):
             if ts_data:
                 activity["timestamps"] = ts_data
 
+        # Generic assets helper (large_text / small_text / champion name)
+        assets = act.get("assets")
+        if assets:
+            if assets.get("large_text"):
+                activity["large_text"] = assets["large_text"]
+                if name == "League of Legends":
+                    activity["champion"] = assets["large_text"]
+
         result.append(activity)
 
     return result
@@ -239,6 +247,13 @@ def _get_timeline(log_dir, days):
         del current_period["_start_dt"]
         del current_period["_start_key"]
 
+        # Clean up internal accumulator
+        accum = current_period.pop("_accumulated_activities", {})
+        if accum:
+            current_period["activity_details"] = list(accum.values())
+        else:
+            current_period["activity_details"] = None
+
         # Format Spotify display from collected tracks
         tracks = current_period.pop("_spotify_tracks", [])
         if tracks:
@@ -265,8 +280,12 @@ def _get_timeline(log_dir, days):
     def _make_period(entry, start_dt):
         names = _activity_names(entry)
         activity = ", ".join(names) if names else "Online"
-        # Get rich activity info for the period
-        activities = _extract_activities(entry)
+        
+        # Initialize internal accumulator dict for merging activities across this period
+        accum = {}
+        for act in _extract_activities(entry):
+            accum[act["name"]] = act
+
         return {
             "_start_dt": start_dt,
             "_start_key": start_dt.strftime("%H:%M"),
@@ -276,7 +295,7 @@ def _get_timeline(log_dir, days):
             "duration_minutes": 0,
             "status": entry.get("discord_status") or "online",
             "activity": activity,
-            "activity_details": activities if activities else None,
+            "_accumulated_activities": accum,
             "spotify": None,
             "_spotify_tracks": [],  # Internal: collect all tracks
         }
@@ -303,11 +322,46 @@ def _get_timeline(log_dir, days):
             _close_period(now)
             current_period = _make_period(e, now)
 
-        # Update activity details to latest in this period
+        # Accumulate/merge details during this period
         if current_period:
-            activities = _extract_activities(e)
-            if activities:
-                current_period["activity_details"] = activities
+            new_acts = _extract_activities(e)
+            accum = current_period["_accumulated_activities"]
+            for act in new_acts:
+                aname = act["name"]
+                if aname in accum:
+                    existing = accum[aname]
+                    # Prioritize richer state (In Game over In Lobby)
+                    is_new_richer = (
+                        ("details" in act and "details" not in existing) or
+                        ("timestamps" in act and "timestamps" not in existing) or
+                        (act.get("state") == "In Game" and existing.get("state") != "In Game") or
+                        (act.get("state") == "In Champion Select" and existing.get("state") == "In Lobby")
+                    )
+
+                    if is_new_richer:
+                        # Retain existing fields if the new richer one doesn't have them
+                        party = act.get("party") or existing.get("party")
+                        champion = act.get("champion") or existing.get("champion")
+                        large_text = act.get("large_text") or existing.get("large_text")
+
+                        existing.update(act)
+                        if party: existing["party"] = party
+                        if champion: existing["champion"] = champion
+                        if large_text: existing["large_text"] = large_text
+                    else:
+                        # Just merge any new fields into the richer existing one
+                        if "party" not in existing and "party" in act:
+                            existing["party"] = act["party"]
+                        if "champion" not in existing and "champion" in act:
+                            existing["champion"] = act["champion"]
+                        if "large_text" not in existing and "large_text" in act:
+                            existing["large_text"] = act["large_text"]
+                        if "timestamps" not in existing and "timestamps" in act:
+                            existing["timestamps"] = act["timestamps"]
+                        if "details" not in existing and "details" in act:
+                            existing["details"] = act["details"]
+                else:
+                    accum[aname] = act
 
         if has_spotify and current_period:
             info = _extract_spotify(e)
