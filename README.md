@@ -51,9 +51,9 @@ The `discord_activity` tool is available to the agent once the plugin loads.
 | Query | Description | Parameters |
 |-------|-------------|------------|
 | `status` | Current Discord presence | — |
-| `timeline` | Activity periods (chronological) | `days` (default: 1) |
+| `sessions` | App sessions with details aggregated | `days` (default: 1) |
 | `stats` | Aggregated statistics | `days` (default: 1) |
-| `spotify` | Recent Spotify listening | `minutes` (default: 60) |
+| `spotify` | Recent Spotify listening | `minutes` (default: 60) or `days` |
 | `history` | Raw recent entries | `minutes` (default: 60) |
 
 ### Example

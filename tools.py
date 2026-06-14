@@ -225,152 +225,83 @@ def _get_current_status(log_dir):
     return json.dumps({"error": "No presence data found"})
 
 
-def _get_timeline(log_dir, days):
-    """Build activity timeline by comparing consecutive entries."""
+def _get_sessions(log_dir, days):
+    """Build session-based aggregations grouped by app."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     entries = _load_entries(log_dir, cutoff)
 
     if not entries:
-        return json.dumps({"timeline": [], "message": "No entries found"})
+        return json.dumps({"apps": {}})
 
-    timeline = []
-    current_period = None
-    prev_content = None
-
-    def _close_period(end_dt):
-        nonlocal current_period
-        if current_period is None:
-            return
-        current_period["end"] = end_dt.strftime("%H:%M")
-        dur = (end_dt - current_period["_start_dt"]).total_seconds() / 60.0
-        current_period["duration"] = f"{dur:.0f}m" if dur < 60 else f"{dur/60:.1f}h"
-        current_period["duration_minutes"] = round(dur, 1)
-        del current_period["_start_dt"]
-        del current_period["_start_key"]
-
-        # Clean up internal accumulator
-        accum = current_period.pop("_accumulated_activities", {})
-        if accum:
-            current_period["activity_details"] = list(accum.values())
-        else:
-            current_period["activity_details"] = None
-
-        # Format Spotify display from collected tracks
-        tracks = current_period.pop("_spotify_tracks", [])
-        if tracks:
-            if len(tracks) <= 3:
-                current_period["spotify"] = " · ".join(
-                    t.replace("|", " — ", 1) for t in tracks
-                )
-            else:
-                unique_artists = []
-                seen = set()
-                for t in tracks:
-                    artist = t.split("|", 1)[1]
-                    if artist not in seen:
-                        seen.add(artist)
-                        unique_artists.append(artist)
-                artists_str = ", ".join(unique_artists[:5])
-                if len(unique_artists) > 5:
-                    artists_str += f" +{len(unique_artists) - 5} more"
-                current_period["spotify"] = f"{len(tracks)} tracks — {artists_str}"
-
-        timeline.append(current_period)
-        current_period = None
-
-    def _make_period(entry, start_dt):
-        names = _activity_names(entry)
-        cleaned_names = []
-        for act in _extract_activities(entry):
-            cleaned_names.append(act["name"])
-
-        activity = ", ".join(cleaned_names) if cleaned_names else "Online"
-
-        # Initialize internal accumulator dict for merging activities across this period
-        accum = {}
-        for act in _extract_activities(entry):
-            accum[act["name"]] = act
-
-        return {
-            "_start_dt": start_dt,
-            "_start_key": start_dt.strftime("%H:%M"),
-            "start": start_dt.strftime("%H:%M"),
-            "end": None,
-            "duration": "0m",
-            "duration_minutes": 0,
-            "status": entry.get("discord_status") or "online",
-            "activity": activity,
-            "_accumulated_activities": accum,
-            "spotify": None,
-            "_spotify_tracks": [],  # Internal: collect all tracks
-        }
+    # app_name -> list of session dicts
+    app_sessions = defaultdict(list)
+    
+    # Gap threshold to split sessions (minutes)
+    GAP_THRESHOLD_MINUTES = 30
 
     for e in entries:
-        names = _activity_names(e)
-        has_spotify = bool((e.get("spotify") or {}).get("song"))
-
-        # Build content key
-        active_activities = []
-        for act in _extract_activities(e):
-            # Split games on match start timestamp or champion name
-            start_ts = act.get("timestamps", {}).get("start")
-            champion = act.get("champion")
-            active_activities.append((act["name"], act.get("state"), start_ts or champion, act.get("details")))
-
-        content = (
-            tuple(sorted([name for name in names if name in [m[0] for m in active_activities]])),
-            has_spotify,
-            tuple(sorted(active_activities))
-        )
         now = e["_dt"]
+        for act in _extract_activities(e):
+            app_name = act["name"]
+            sessions = app_sessions[app_name]
+            
+            # Should we create a new session or append to the last one?
+            if not sessions:
+                make_new = True
+            else:
+                last_sess = sessions[-1]
+                gap = (now - last_sess["_last_seen"]).total_seconds() / 60.0
+                make_new = gap > GAP_THRESHOLD_MINUTES
+                
+            if make_new:
+                sessions.append({
+                    "_start_dt": now,
+                    "_last_seen": now,
+                    "start": now.strftime("%H:%M"),
+                    "end": now.strftime("%H:%M"),
+                    "duration_minutes": 0,
+                    "details": set()
+                })
+            
+            sess = sessions[-1]
+            sess["_last_seen"] = now
+            sess["end"] = now.strftime("%H:%M")
+            sess["duration_minutes"] = round((now - sess["_start_dt"]).total_seconds() / 60.0)
+            
+            # Extract detail strings (e.g. video titles, champions, file names)
+            detail_str = act.get("champion") or act.get("details")
+            if detail_str and detail_str not in ("Idling", "Searching for", "Viewing Homepage", "Browsing repository"):
+                # Clean up known prefixes for brevity
+                if detail_str.startswith("Working on "):
+                    detail_str = detail_str.split(":")[0]  # Remove line numbers
+                sess["details"].add(detail_str)
 
-        if prev_content is None:
-            current_period = _make_period(e, now)
-            if has_spotify:
-                info = _extract_spotify(e)
-                if info:
-                    current_period["_spotify_tracks"].append(f"{info['song']}|{info['artist']}")
-            prev_content = content
-            continue
+    # Format the final output
+    result = {}
+    for app_name, sessions in app_sessions.items():
+        formatted_sessions = []
+        total_mins = 0
+        for s in sessions:
+            if s["duration_minutes"] < 1:
+                continue  # Skip transient blips
+            dur = s["duration_minutes"]
+            total_mins += dur
+            dur_str = f"{dur}m" if dur < 60 else f"{dur/60:.1f}h"
+            formatted_sessions.append({
+                "start": s["start"],
+                "end": s["end"],
+                "duration": dur_str,
+                "details": list(s["details"])
+            })
+        
+        if formatted_sessions:
+            total_str = f"{total_mins}m" if total_mins < 60 else f"{total_mins/60:.1f}h"
+            result[app_name] = {
+                "total_duration": total_str,
+                "sessions": formatted_sessions
+            }
 
-        if content != prev_content:
-            _close_period(now)
-            current_period = _make_period(e, now)
-
-        # Accumulate/merge details during this period
-        if current_period:
-            new_acts = _extract_activities(e)
-            accum = current_period["_accumulated_activities"]
-            for act in new_acts:
-                aname = act["name"]
-                if aname in accum:
-                    accum[aname].update(act)
-                else:
-                    accum[aname] = act
-
-        if has_spotify and current_period:
-            info = _extract_spotify(e)
-            if info:
-                track_key = f"{info['song']}|{info['artist']}"
-                if not current_period["_spotify_tracks"] or current_period["_spotify_tracks"][-1] != track_key:
-                    current_period["_spotify_tracks"].append(track_key)
-
-        prev_content = content
-
-    if entries:
-        _close_period(entries[-1]["_dt"])
-
-    # Filter out short periods (<1m) and Online-only periods without Spotify
-    filtered = []
-    for p in timeline:
-        if p["duration_minutes"] >= 1.0:
-            if p["activity"] != "Online" or p.get("spotify"):
-                # Ignore transient playing states with no details
-                if p["activity_details"] and all(act.get("type") == "playing" and not act.get("details") for act in p["activity_details"]):
-                    continue
-                filtered.append(p)
-
-    return json.dumps({"timeline": filtered, "periods": len(filtered)})
+    return json.dumps({"apps": result})
 
 
 def _get_stats(log_dir, days):
@@ -437,7 +368,7 @@ def _get_stats(log_dir, days):
 
     # Non-Spotify activity stats — track by app name + details/content
     activity_ms = defaultdict(float)  # app name → total ms
-    content_counter = defaultdict(lambda: {"count": 0, "app": ""})  # "app|details" → count
+    content_counter = defaultdict(lambda: {"ms": 0.0, "app": ""})  # "app|details" → ms
     for i in range(len(entries) - 1):
         sec = (entries[i + 1]["_dt"] - entries[i]["_dt"]).total_seconds()
         if sec > 1800:
@@ -449,7 +380,7 @@ def _get_stats(log_dir, days):
             details = act.get("details")
             if details:
                 ckey = f"{name}{_KEY_SEP}{details}"
-                content_counter[ckey]["count"] += 1
+                content_counter[ckey]["ms"] += sec * 1000
                 content_counter[ckey]["app"] = name
 
     top_activities = []
@@ -457,9 +388,9 @@ def _get_stats(log_dir, days):
         top_activities.append({"name": name, "minutes": round(ms / 60000, 1)})
 
     top_content = []
-    for ckey, info in sorted(content_counter.items(), key=lambda x: -x[1]["count"])[:10]:
+    for ckey, info in sorted(content_counter.items(), key=lambda x: -x[1]["ms"])[:10]:
         _, details = ckey.split(_KEY_SEP, 1)
-        top_content.append({"app": info["app"], "details": details, "seen": info["count"]})
+        top_content.append({"app": info["app"], "details": details, "minutes": round(info["ms"] / 60000, 1)})
 
     # Total elapsed
     elapsed = (entries[-1]["_dt"] - entries[0]["_dt"]).total_seconds() / 60 if len(entries) >= 2 else 0
@@ -484,9 +415,13 @@ def _get_stats(log_dir, days):
     })
 
 
-def _get_spotify(log_dir, minutes):
+def _get_spotify(log_dir, minutes=None, days=None):
     """Get recent Spotify listening history."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    if days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes or 60)
+        
     entries = _load_entries(log_dir, cutoff)
 
     songs = []
@@ -540,12 +475,12 @@ def discord_activity(args: dict, **kwargs) -> str:
     try:
         if query == "status":
             return _get_current_status(log_dir)
-        elif query == "timeline":
-            return _get_timeline(log_dir, days)
+        elif query == "sessions":
+            return _get_sessions(log_dir, days)
         elif query == "stats":
             return _get_stats(log_dir, days)
         elif query == "spotify":
-            return _get_spotify(log_dir, minutes)
+            return _get_spotify(log_dir, minutes=args.get("minutes"), days=args.get("days"))
         elif query == "history":
             return _get_history(log_dir, minutes)
         else:
