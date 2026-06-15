@@ -1,6 +1,6 @@
 # hermes-discord-activity-tracker
 
-A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that tracks Discord presence via [Lanyard](https://lanyard.dev) REST polling, with daily JSONL logs and a `discord_activity` tool for querying presence data.
+A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that tracks Discord presence via [Lanyard](https://github.com/phineas/lanyard) REST polling, with daily JSONL logs and a `discord_activity` tool for querying presence data.
 
 ## Features
 
@@ -12,9 +12,10 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that tracks Disco
 
 ## Installation
 
-This plugin requires a [Lanyard](https://lanyard.dev) account. You can either:
-- **Join the official Lanyard Discord server** (https://discord.gg/lanyard) — the bot automatically tracks your presence
-- **Self-host Lanyard** — point the API to your own server (see `DISCORD_ACTIVITY_LANYARD_API` below)
+This plugin uses [Lanyard](https://github.com/phineas/lanyard) to track your Discord presence. Lanyard exposes a REST API that this plugin polls. You have two options:
+
+- **Join the official Lanyard Discord server** (https://discord.gg/UrXF2cfJ7F) — join it to get your own API endpoint, then set `DISCORD_ACTIVITY_LANYARD_API` to your personal endpoint
+- **Self-host Lanyard** — see the [Lanyard GitHub repo](https://github.com/phineas/lanyard) for setup instructions, then point `DISCORD_ACTIVITY_LANYARD_API` to your own server
 
 1. Clone the plugin into your Hermes plugins directory:
    ```bash
