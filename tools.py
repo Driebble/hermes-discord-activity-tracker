@@ -20,6 +20,11 @@ except ImportError:
 
 _LOG_SUBDIR = "logs/discord-activity"
 
+# Runtime configuration — set by __init__.register() from env vars.
+# Defaults match prior hardcoded behavior.
+IGNORE_SPOTIFY = False
+SESSION_GAP_MINUTES = 30
+
 _ACTIVITY_TYPE_MAP = {
     0: "playing",
     1: "streaming",
@@ -107,6 +112,10 @@ def _extract_activities(entry):
     Deduplicates by (name, details, state) — same video from multiple
     sources (PreMiD + native) collapses to one.
     Only extracts games when they are actively "In Game".
+
+    When IGNORE_SPOTIFY is set, the dedicated Spotify activity entry
+    (PreMiD-style "Spotify" presence) is filtered from the activity list.
+    The structured spotify block is filtered separately in _extract_spotify.
     """
     seen = set()
     result = []
@@ -117,14 +126,16 @@ def _extract_activities(entry):
         if not name or name.lower() == "spotify":
             continue
 
-        # Filter out lobby/queue/champion select game states
-        is_game = act.get("type") == 0
-        state = act.get("state")
-        has_rich_states = state in ("In Game", "In Lobby", "In Queue", "In Champion Select")
-        if is_game and has_rich_states and state != "In Game":
+        # League of Legends special-case: filter menu/lobby/queue time.
+        # The LoL client doesn't always populate the `state` field, so we
+        # use `details` (e.g. "ARAM: Mayhem") as the "in a match" signal.
+        # Other games are not affected — they typically only emit rich
+        # presence while actively playing, so menu filtering isn't needed.
+        if act.get("name") == "League of Legends" and not act.get("details"):
             continue
 
         details = act.get("details")
+        state = act.get("state")
 
         # Deduplicate by (name, details, state)
         sig = (name, details, state)
@@ -167,7 +178,9 @@ def _extract_activities(entry):
 
 
 def _extract_spotify(entry):
-    """Extract Spotify info from an entry."""
+    """Extract Spotify info from an entry. Returns None when IGNORE_SPOTIFY is set."""
+    if IGNORE_SPOTIFY:
+        return None
     spotify = entry.get("spotify")
     if not spotify:
         return None
@@ -236,8 +249,8 @@ def _get_sessions(log_dir, days):
     # app_name -> list of session dicts
     app_sessions = defaultdict(list)
     
-    # Gap threshold to split sessions (minutes)
-    GAP_THRESHOLD_MINUTES = 30
+    # Gap threshold to split sessions (minutes, configurable via env)
+    GAP_THRESHOLD_MINUTES = SESSION_GAP_MINUTES
 
     for e in entries:
         now = e["_dt"]
@@ -312,11 +325,15 @@ def _get_stats(log_dir, days):
     if not entries:
         return json.dumps({"error": "No entries found"})
 
+    # Shared gap threshold — same value the sessions query uses.
+    # Configurable via DISCORD_ACTIVITY_SESSION_GAP_MINUTES.
+    gap_seconds = SESSION_GAP_MINUTES * 60
+
     # Status minutes
     status_minutes = defaultdict(float)
     for i in range(len(entries) - 1):
         sec = (entries[i + 1]["_dt"] - entries[i]["_dt"]).total_seconds()
-        if sec <= 1800:  # < 30 min gap
+        if sec <= gap_seconds:
             status = entries[i].get("discord_status") or "online"
             status_minutes[status] += sec / 60.0
 
@@ -324,7 +341,7 @@ def _get_stats(log_dir, days):
     platform_minutes = {"desktop": 0.0, "mobile": 0.0, "web": 0.0}
     for i in range(len(entries) - 1):
         sec = (entries[i + 1]["_dt"] - entries[i]["_dt"]).total_seconds()
-        if sec <= 1800:
+        if sec <= gap_seconds:
             platforms = entries[i].get("platforms", {})
             active = [p for p in ("desktop", "mobile", "web") if platforms.get(p)]
             if active:
@@ -333,29 +350,32 @@ def _get_stats(log_dir, days):
                     platform_minutes[p] += share
 
     # Spotify stats — each track play has a unique timestamps.start
+    # Skipped when IGNORE_SPOTIFY is set; the response "spotify" key
+    # returns zeros so the schema stays stable for callers.
     seen_plays = set()
     track_ms = defaultdict(float)
     artist_ms = defaultdict(float)
-    for e in entries:
-        spotify = e.get("spotify")
-        if not spotify:
-            continue
-        song = spotify.get("song")
-        artist = spotify.get("artist") or "Unknown"
-        if not song:
-            continue
-        ts_info = spotify.get("timestamps", {})
-        play_start = ts_info.get("start")
-        end_ms = ts_info.get("end")
-        if play_start and end_ms and play_start not in seen_plays:
-            seen_plays.add(play_start)
-            dur_ms = max(0, end_ms - play_start)
-            key = f"{song}{_KEY_SEP}{artist}"
-            track_ms[key] += dur_ms
-            for a in artist.split(";"):
-                a = a.strip()
-                if a:
-                    artist_ms[a] += dur_ms
+    if not IGNORE_SPOTIFY:
+        for e in entries:
+            spotify = e.get("spotify")
+            if not spotify:
+                continue
+            song = spotify.get("song")
+            artist = spotify.get("artist") or "Unknown"
+            if not song:
+                continue
+            ts_info = spotify.get("timestamps", {})
+            play_start = ts_info.get("start")
+            end_ms = ts_info.get("end")
+            if play_start and end_ms and play_start not in seen_plays:
+                seen_plays.add(play_start)
+                dur_ms = max(0, end_ms - play_start)
+                key = f"{song}{_KEY_SEP}{artist}"
+                track_ms[key] += dur_ms
+                for a in artist.split(";"):
+                    a = a.strip()
+                    if a:
+                        artist_ms[a] += dur_ms
 
     top_songs = []
     for key, ms in sorted(track_ms.items(), key=lambda x: -x[1])[:10]:
@@ -371,7 +391,7 @@ def _get_stats(log_dir, days):
     content_counter = defaultdict(lambda: {"ms": 0.0, "app": ""})  # "app|details" → ms
     for i in range(len(entries) - 1):
         sec = (entries[i + 1]["_dt"] - entries[i]["_dt"]).total_seconds()
-        if sec > 1800:
+        if sec > gap_seconds:
             continue
         acts = _extract_activities(entries[i])
         for act in acts:
@@ -416,7 +436,9 @@ def _get_stats(log_dir, days):
 
 
 def _get_spotify(log_dir, minutes=None, days=None):
-    """Get recent Spotify listening history."""
+    """Get recent Spotify listening history. Returns empty when IGNORE_SPOTIFY is set."""
+    if IGNORE_SPOTIFY:
+        return json.dumps({"songs": [], "total_entries": 0, "ignored": True})
     if days is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     else:

@@ -39,6 +39,8 @@ Add these to your profile's `.env` file:
 | `DISCORD_ACTIVITY_USER_ID` | *required* | Your Discord user ID (right-click your name → Copy User ID) |
 | `DISCORD_ACTIVITY_POLL_INTERVAL` | `60` | Seconds between REST polls |
 | `DISCORD_ACTIVITY_LANYARD_API` | `https://api.lanyard.rest/v1` | Lanyard API base URL. Point this to your own self-hosted Lanyard server if you're not using the official Discord bot |
+| `DISCORD_ACTIVITY_IGNORE_SPOTIFY` | `false` | When `true`/`1`/`yes`/`on`, strip all Spotify data from tool results (status, history, sessions, stats) |
+| `DISCORD_ACTIVITY_SESSION_GAP_MINUTES` | `30` | Disconnect threshold in minutes. Two data points further apart than this are treated as a session break (applies to both `sessions` and `stats` queries) |
 
 ```env
 DISCORD_ACTIVITY_USER_ID=000000000000000000

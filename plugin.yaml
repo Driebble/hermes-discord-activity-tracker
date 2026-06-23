@@ -12,3 +12,7 @@ optional_env:
     description: "Seconds between REST polls (default: 60)"
   - name: DISCORD_ACTIVITY_LANYARD_API
     description: "Lanyard API base URL (default: https://api.lanyard.rest/v1)"
+  - name: DISCORD_ACTIVITY_IGNORE_SPOTIFY
+    description: "When truthy (1/true/yes/on), strip all Spotify data from tool results"
+  - name: DISCORD_ACTIVITY_SESSION_GAP_MINUTES
+    description: "Disconnect threshold in minutes for sessions/stats queries (default: 30)"
