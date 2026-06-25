@@ -270,23 +270,30 @@ def _get_sessions(log_dir, days):
                 make_new = gap > GAP_THRESHOLD_MINUTES
                 
             if make_new:
+                # If querying more than 1 day, include MM/DD in the session window boundary
+                fmt = "%m/%d %H:%M" if days > 1 else "%H:%M"
                 sessions.append({
                     "_start_dt": now,
                     "_last_seen": now,
-                    "start": now.strftime("%H:%M"),
-                    "end": now.strftime("%H:%M"),
+                    "start": now.strftime(fmt),
+                    "end": now.strftime(fmt),
                     "duration_minutes": 0,
                     "details": set()
                 })
             
             sess = sessions[-1]
             sess["_last_seen"] = now
-            sess["end"] = now.strftime("%H:%M")
+            # Match the start format representation
+            fmt = "%m/%d %H:%M" if days > 1 else "%H:%M"
+            sess["end"] = now.strftime(fmt)
             sess["duration_minutes"] = round((now - sess["_start_dt"]).total_seconds() / 60.0)
             
             # Extract detail strings (e.g. video titles, file names)
             detail_str = act.get("details")
-            if detail_str and detail_str not in ("Idling", "Searching for", "Viewing Homepage", "Browsing repository"):
+            if detail_str and detail_str not in (
+                "Idling", "Searching for", "Viewing Homepage", "Browsing repository",
+                "Viewing channel:", "Viewing their content"
+            ):
                 # Clean up known prefixes for brevity
                 if detail_str.startswith("Working on "):
                     detail_str = detail_str.split(":")[0]  # Remove line numbers

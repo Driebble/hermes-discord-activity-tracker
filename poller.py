@@ -39,16 +39,36 @@ except ImportError:
 
 
 def _is_process_alive(pid):
-    """Check if a process is still running (cross-platform)."""
+    """Check if a process is still running (cross-platform).
+
+    Windows note: OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) returns a valid
+    handle for dead PIDs (the handle is to a process object that no longer
+    exists). We must also confirm the process has not exited via
+    GetExitCodeProcess — a STILL_ACTIVE (259) return means alive, anything else
+    means the process has exited and the handle is to a corpse. Note:
+    GetExitCodeProcess requires PROCESS_QUERY_INFORMATION (0x0400), not
+    PROCESS_QUERY_LIMITED_INFORMATION (0x100000) — the latter returns failure
+    for the exit-code query even on live processes.
+    """
     try:
         if os.name == "nt":
             import ctypes
+            from ctypes import wintypes
             kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x100000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if handle:
+            STILL_ACTIVE = 259
+            # PROCESS_QUERY_INFORMATION (0x0400) — needed for GetExitCodeProcess.
+            # Open with both flags so we can also use the handle for limited info.
+            handle = kernel32.OpenProcess(0x0400, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    # Query failed — treat as dead so a fresh poller can take over
+                    return False
+                return exit_code.value == STILL_ACTIVE
+            finally:
                 kernel32.CloseHandle(handle)
-                return True
-            return False
         else:
             os.kill(pid, 0)
             return True
@@ -128,6 +148,7 @@ class ActivityPoller:
                 entry = self._make_entry(data, now)
                 self._write(entry)
                 self._poll_count += 1
+                self._error_count = 0
             else:
                 self._error_count += 1
                 if self._error_count <= 3:
